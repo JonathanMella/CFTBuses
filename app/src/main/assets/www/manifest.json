@@ -1,0 +1,37 @@
+{
+  "name": "BusCFTLA - Transporte CFT Lota Arauco",
+  "short_name": "BusCFTLA",
+  "description": "Aplicación web progresiva móvil para el seguimiento de transporte público del Centro de Formación Técnica Lota Arauco en Lota, Chile.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0F172A",
+  "theme_color": "#1E40AF",
+  "lang": "es-CL",
+  "categories": ["travel", "education", "navigation"],
+  "icons": [
+    {
+      "src": "./assets/logo.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Ver Mapa",
+      "short_name": "Mapa",
+      "description": "Ver mapa y paraderos de buses",
+      "url": "./index.html#mapa",
+      "icons": [{ "src": "./assets/logo.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "Denunciar Incidente",
+      "short_name": "Denuncia",
+      "description": "Centro de denuncias de buses",
+      "url": "./index.html#denuncia",
+      "icons": [{ "src": "./assets/logo.svg", "sizes": "192x192" }]
+    }
+  ]
+}
