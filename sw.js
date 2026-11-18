@@ -1,4 +1,4 @@
-const CACHE_NAME = 'buscftla-v1.0.0';
+const CACHE_NAME = 'buscftla-v1.7.0';
 const STATIC_ASSETS = [
   './',
   './index.html',

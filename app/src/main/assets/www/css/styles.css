@@ -136,6 +136,107 @@ body.modal-active {
   overflow: hidden;
 }
 
+.app-startup-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: linear-gradient(145deg, #eff6ff 0%, #ffffff 58%, #fff7ed 100%);
+  color: #172554;
+  transition: opacity 220ms ease, visibility 220ms ease;
+}
+
+.app-startup-screen.is-hidden {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-startup-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(100%, 360px);
+  padding: 30px 24px;
+  border: 1px solid #dbeafe;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 20px 60px rgba(30, 64, 175, 0.12);
+  text-align: center;
+}
+
+.app-startup-logo { width: 68px; height: 68px; margin-bottom: 18px; }
+.app-startup-card h1 { margin: 0 0 8px; font-size: 1.2rem; font-weight: 800; }
+.app-startup-card > p, .app-startup-error p { margin: 0; color: #64748b; font-size: 0.9rem; line-height: 1.5; }
+.app-startup-spinner {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 18px;
+  border: 3px solid #dbeafe;
+  border-top-color: #1e40af;
+  border-radius: 50%;
+  animation: app-startup-spin 0.8s linear infinite;
+}
+
+@keyframes app-startup-spin { to { transform: rotate(360deg); } }
+
+.app-startup-error { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
+.app-startup-error button, .map-load-warning button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 18px;
+  background: #1e40af;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.map-load-warning {
+  position: absolute;
+  z-index: 700;
+  top: 82px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 10px 12px;
+  transform: translateX(-50%);
+  border: 1px solid #fed7aa;
+  border-radius: 14px;
+  background: #fff7ed;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+  color: #9a3412;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.map-load-warning button { padding: 7px 11px; background: #c2410c; font-size: 0.78rem; }
+
+.map-startup-error {
+  position: absolute;
+  inset: 80px 16px 24px;
+  z-index: 800;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  border-radius: 20px;
+  background: rgba(248, 250, 252, 0.97);
+  color: #172554;
+  text-align: center;
+}
+
+.map-startup-error > div { font-size: 2.5rem; }
+.map-startup-error strong { font-size: 1.1rem; }
+.map-startup-error p { max-width: 320px; margin: 0; color: #64748b; line-height: 1.5; }
+.map-startup-error button { border: 0; border-radius: 10px; padding: 10px 18px; background: #1e40af; color: #fff; font-weight: 700; cursor: pointer; }
+
 /* ==========================================================================
    Encabezado Superior (Header)
    ========================================================================== */
@@ -2030,133 +2131,4 @@ input:checked + .switch-slider:before {
 .btn-toggle-waiting:hover {
   background: var(--primary-color);
   color: #FFFFFF;
-}
-
-/* ==========================================================================
-   Tarjeta y Botones de Acceso Rápido / Modo Prueba (Sin Cuenta)
-   ========================================================================== */
-.demo-login-box {
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, rgba(16, 185, 129, 0.08) 100%);
-  border: 2px dashed var(--primary-color);
-  border-radius: var(--radius-md);
-  padding: 16px 14px;
-  margin-bottom: 18px;
-  text-align: center;
-  transition: all var(--transition-fast);
-}
-
-.theme-dark .demo-login-box {
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.16) 0%, rgba(16, 185, 129, 0.12) 100%);
-  border-color: var(--primary-light);
-}
-
-.demo-login-title {
-  font-size: 1.05rem;
-  font-weight: 800;
-  color: var(--text-main);
-  margin: 6px 0 4px;
-}
-
-.demo-login-desc {
-  font-size: 0.82rem;
-  color: var(--text-muted);
-  line-height: 1.4;
-  margin: 0 0 12px;
-}
-
-.btn-demo-primary {
-  width: 100%;
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-  background: var(--primary-gradient);
-  color: #FFFFFF;
-  font-weight: 800;
-  font-size: 0.95rem;
-  border: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  box-shadow: 0 4px 14px rgba(30, 64, 175, 0.35);
-  transition: all var(--transition-fast);
-}
-
-.btn-demo-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(30, 64, 175, 0.45);
-}
-
-.btn-demo-primary:active {
-  transform: translateY(1px);
-}
-
-.demo-quick-roles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.btn-quick-chip {
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 0.8rem;
-  font-weight: 700;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  transition: all var(--transition-fast);
-  border: 1px solid var(--border-color);
-  background: var(--bg-card);
-  color: var(--text-main);
-}
-
-.btn-quick-chip:hover {
-  border-color: var(--primary-color);
-  background: var(--primary-surface);
-  color: var(--primary-color);
-}
-
-.demo-divider {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 16px 0;
-}
-
-.demo-divider-line {
-  flex: 1;
-  height: 1px;
-  background: var(--border-color);
-}
-
-.demo-divider-text {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  font-weight: 700;
-}
-
-.demo-creds-hint {
-  margin-top: 14px;
-  padding: 10px 14px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-card-subtle);
-  border: 1px solid var(--border-color);
-  font-size: 0.8rem;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-
-.demo-creds-hint code {
-  font-family: monospace;
-  font-weight: 700;
-  color: var(--primary-color);
-  background: var(--primary-surface);
-  padding: 2px 5px;
-  border-radius: 4px;
 }

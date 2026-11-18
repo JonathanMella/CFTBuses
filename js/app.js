@@ -3,6 +3,22 @@
  * Manejo de Estado, Modales, Roles, Hojas Desplegables, Cuenta Regresiva y Denuncias
  */
 
+// Native Android stores these values encrypted with an Android Keystore key.
+// In a regular browser/PWA, retain the standard localStorage behavior.
+const busStorage = (() => {
+  const nativeStore = window.BusCFTLAStorage;
+  if (!nativeStore) return window.localStorage;
+
+  const browserStore = window.localStorage;
+  for (const key of Object.keys(browserStore)) {
+    if (!key.startsWith('buscftla_')) continue;
+    const clearValue = browserStore.getItem(key) || '';
+    if (nativeStore.getItem(key) === null) nativeStore.setItem(key, clearValue);
+    if (nativeStore.getItem(key) === clearValue) browserStore.removeItem(key);
+  }
+  return nativeStore;
+})();
+
 class BusCFTLAApp {
   constructor() {
     this.mapInstance = null;
@@ -11,6 +27,15 @@ class BusCFTLAApp {
     this.selectedStop = null;
     this.countdownInterval = null;
     this.complaints = [];
+    this.authToken = busStorage.getItem('buscftla_auth_token') || '';
+    this.userProfile = null;
+    this.isRegistering = false;
+    this.isAwaitingVerification = false;
+    this.pendingVerificationEmail = busStorage.getItem('buscftla_pending_verification') || '';
+    // Dirección temporal de desarrollo para conectar teléfonos en la misma Wi-Fi.
+    // Al publicar el backend, reemplazarla por el dominio HTTPS del servidor.
+    this.serverIp = busStorage.getItem('buscftla_server_ip') || '10.162.227.223';
+    this.apiBase = window.BUSCFTLA_API_BASE || (window.location.protocol === 'file:' ? `http://${this.serverIp}:8080/api` : '/api');
     this.settings = {
       proximityAlerts: true,
       soundEnabled: true,
@@ -21,32 +46,53 @@ class BusCFTLAApp {
     this.deferredPrompt = null;
   }
 
-  init() {
-    this.loadState();
-    try {
-      this.initMap();
-    } catch (err) {
-      console.error('Error inicializando el mapa:', err);
-    }
-    this.setupEventListeners();
-    this.applyTheme();
-    this.renderUserProfile();
-    this.renderHelpCards();
-    this.renderComplaintsHistory();
-    this.startGlobalCountdown();
-    this.setupPWAInstall();
-    this.setupServiceWorker();
+  async init() {
+    const retryButton = document.getElementById('app-startup-retry');
+    if (retryButton) retryButton.addEventListener('click', () => window.location.reload());
 
-    // Si es la primera visita, abrir selector de rol
-    if (!localStorage.getItem('buscftla_role_selected')) {
-      this.openRoleModal();
-    } else {
-      // Seleccionar por defecto la entrada CFTLA
-      setTimeout(() => {
-        if (this.mapInstance) {
-          this.mapInstance.selectStop('stop-cftla');
-        }
-      }, 600);
+    try {
+      if (busStorage.getItem('buscftla_auth_storage_version') !== '2') {
+        ['buscftla_auth_token', 'buscftla_role_selected', 'buscftla_current_role', 'buscftla_user_email', 'buscftla_pending_verification'].forEach(key => busStorage.removeItem(key));
+        busStorage.setItem('buscftla_auth_storage_version', '2');
+        this.authToken = '';
+        this.pendingVerificationEmail = '';
+      }
+      this.loadState();
+      if (!this.authToken) busStorage.removeItem('buscftla_role_selected');
+      if (this.authToken) busStorage.setItem('buscftla_role_selected', 'true');
+
+      let sessionTask = Promise.resolve();
+      if (this.authToken) sessionTask = this.restoreServerSession();
+
+      try {
+        this.initMap();
+      } catch (err) {
+        console.error('Error inicializando el mapa:', err);
+        this.showMapError('No pudimos iniciar el mapa. Recarga la aplicación para intentarlo de nuevo.');
+      }
+      this.setupEventListeners();
+      if (this.pendingVerificationEmail) this.setVerificationMode(true);
+      this.applyTheme();
+      this.renderUserProfile();
+      this.renderHelpCards();
+      this.renderComplaintsHistory();
+      this.startGlobalCountdown();
+      this.setupPWAInstall();
+      this.setupServiceWorker();
+
+      if (!busStorage.getItem('buscftla_role_selected')) {
+        this.openRoleModal();
+      } else {
+        setTimeout(() => {
+          if (this.mapInstance) this.mapInstance.selectStop('stop-cftla');
+        }, 600);
+      }
+
+      await Promise.all([sessionTask, new Promise(resolve => setTimeout(resolve, 500))]);
+      this.hideStartupScreen();
+    } catch (error) {
+      console.error('No se pudo iniciar BusCFTLA:', error);
+      this.showStartupError('No pudimos iniciar la aplicación. Comprueba tu conexión y vuelve a intentarlo.');
     }
   }
 
@@ -54,17 +100,17 @@ class BusCFTLAApp {
    * Cargar estado persistente de localStorage
    */
   loadState() {
-    const savedRole = localStorage.getItem('buscftla_current_role');
+    const savedRole = busStorage.getItem('buscftla_current_role');
     if (savedRole && (savedRole === 'student' || savedRole === 'teacher')) {
       this.currentRole = savedRole;
     }
 
-    const savedTheme = localStorage.getItem('buscftla_current_theme');
+    const savedTheme = busStorage.getItem('buscftla_current_theme');
     if (savedTheme) {
       this.currentTheme = savedTheme;
     }
 
-    const savedSettings = localStorage.getItem('buscftla_settings');
+    const savedSettings = busStorage.getItem('buscftla_settings');
     if (savedSettings) {
       try {
         this.settings = { ...this.settings, ...JSON.parse(savedSettings) };
@@ -73,7 +119,7 @@ class BusCFTLAApp {
       }
     }
 
-    const savedComplaints = localStorage.getItem('buscftla_complaints');
+    const savedComplaints = busStorage.getItem('buscftla_complaints');
     if (savedComplaints) {
       try {
         this.complaints = JSON.parse(savedComplaints);
@@ -86,6 +132,62 @@ class BusCFTLAApp {
     }
   }
 
+  async apiRequest(path, options = {}) {
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    if (this.authToken) headers.Authorization = `Bearer ${this.authToken}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    let response;
+    try {
+      response = await fetch(`${this.apiBase}${path}`, { ...options, headers, signal: controller.signal });
+    } catch (error) {
+      if (error.name === 'AbortError') throw new Error('El servidor está demorando demasiado. Inténtalo nuevamente.');
+      if (error instanceof TypeError) throw new Error('No hay conexión con el servidor. Revisa internet e inténtalo de nuevo.');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Error del servidor (${response.status}).`);
+    return payload;
+  }
+
+  async loadServerComplaints() {
+    try {
+      const result = await this.apiRequest('/complaints');
+      this.complaints = result.complaints;
+      this.renderComplaintsHistory();
+    } catch (error) {
+      console.warn('No se pudo sincronizar el historial:', error);
+      this.showToast(error.message || 'No se pudo actualizar el historial desde el servidor.', 4500);
+    }
+  }
+
+  async restoreServerSession() {
+    try {
+      const result = await this.apiRequest('/me');
+      this.userProfile = result.user;
+      this.currentRole = result.user.role;
+      busStorage.setItem('buscftla_current_role', this.currentRole);
+      this.renderUserProfile();
+      await this.loadServerComplaints();
+    } catch (error) {
+      if (error.message && (error.message.includes('conexión') || error.message.includes('demorando'))) {
+        this.showToast(error.message, 5000);
+        return;
+      }
+      this.authToken = '';
+      this.userProfile = null;
+      busStorage.removeItem('buscftla_auth_token');
+      busStorage.removeItem('buscftla_role_selected');
+      busStorage.removeItem('buscftla_user_email');
+      busStorage.removeItem('buscftla_current_role');
+      busStorage.removeItem('buscftla_pending_verification');
+      this.pendingVerificationEmail = '';
+      this.openRoleModal();
+    }
+  }
+
   /**
    * Inicializar el mapa
    */
@@ -95,10 +197,83 @@ class BusCFTLAApp {
     window.busMap = this.mapInstance;
   }
 
+  hideStartupScreen() {
+    const screen = document.getElementById('app-startup-screen');
+    if (!screen) return;
+    screen.classList.add('is-hidden');
+    screen.setAttribute('aria-hidden', 'true');
+  }
+
+  showStartupError(message) {
+    const title = document.getElementById('app-startup-title');
+    const spinner = document.querySelector('.app-startup-spinner');
+    const errorBox = document.getElementById('app-startup-error');
+    const errorText = document.getElementById('app-startup-error-message');
+    if (title) title.textContent = 'No se pudo iniciar';
+    if (spinner) spinner.classList.add('is-hidden');
+    if (errorText) errorText.textContent = message;
+    if (errorBox) errorBox.classList.remove('is-hidden');
+  }
+
+  showMapError(message) {
+    const container = document.getElementById('map-container');
+    if (!container) return;
+    let panel = document.getElementById('map-startup-error');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'map-startup-error';
+      panel.className = 'map-startup-error';
+      panel.setAttribute('role', 'alert');
+      container.appendChild(panel);
+    }
+    panel.innerHTML = `<div aria-hidden="true">🗺️</div><strong>Mapa no disponible</strong><p></p><button type="button">Reintentar</button>`;
+    panel.querySelector('p').textContent = message;
+    panel.querySelector('button').addEventListener('click', () => window.location.reload());
+  }
+
+  showMapWarning(message) {
+    const container = document.getElementById('map-container');
+    if (!container) return;
+    let warning = document.getElementById('map-load-warning');
+    if (!warning) {
+      warning = document.createElement('div');
+      warning.id = 'map-load-warning';
+      warning.className = 'map-load-warning';
+      warning.setAttribute('role', 'status');
+      warning.innerHTML = '<span></span><button type="button">Reintentar</button>';
+      warning.querySelector('button').addEventListener('click', () => window.location.reload());
+      container.appendChild(warning);
+    }
+    warning.querySelector('span').textContent = message;
+    warning.classList.remove('is-hidden');
+  }
+
+  clearMapWarning() {
+    const warning = document.getElementById('map-load-warning');
+    if (warning) warning.classList.add('is-hidden');
+  }
+
   /**
    * Asignar listeners a la interfaz
    */
   setupEventListeners() {
+    const serverIpInput = document.getElementById('setting-server-ip');
+    const saveServerIpButton = document.getElementById('btn-save-server-ip');
+    if (serverIpInput) serverIpInput.value = this.serverIp;
+    if (saveServerIpButton) {
+      saveServerIpButton.addEventListener('click', () => {
+        const ip = serverIpInput ? serverIpInput.value.trim() : '';
+        const validIp = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip) && ip.split('.').every(part => Number(part) <= 255);
+        if (!validIp) {
+          this.showToast('Ingresa una dirección IPv4 válida.');
+          return;
+        }
+        busStorage.setItem('buscftla_server_ip', ip);
+        this.showToast('Dirección guardada. Reiniciando conexión…');
+        setTimeout(() => window.location.reload(), 500);
+      });
+    }
+
     // Abrir Modal de Perfil/Pestañas
     const profileBtn = document.getElementById('user-profile-btn');
     if (profileBtn) {
@@ -124,6 +299,10 @@ class BusCFTLAApp {
     if (loginForm) {
       loginForm.addEventListener('submit', (e) => this.handleInstitutionalLogin(e));
     }
+    const toggleAuthModeBtn = document.getElementById('btn-toggle-auth-mode');
+    if (toggleAuthModeBtn) toggleAuthModeBtn.addEventListener('click', () => this.setRegistrationMode(!this.isRegistering));
+    const resendVerificationBtn = document.getElementById('btn-resend-verification');
+    if (resendVerificationBtn) resendVerificationBtn.addEventListener('click', () => this.resendVerificationCode());
 
     // Botón mostrar/ocultar contraseña
     const togglePassBtn = document.getElementById('btn-toggle-password');
@@ -140,16 +319,6 @@ class BusCFTLAApp {
     const toggleWaitingBtn = document.getElementById('btn-toggle-waiting');
     if (toggleWaitingBtn) {
       toggleWaitingBtn.addEventListener('click', () => this.toggleUserWaiting());
-    }
-
-    // Selector de rol en modal de login
-    const studentCard = document.getElementById('role-select-student');
-    const teacherCard = document.getElementById('role-select-teacher');
-    if (studentCard) {
-      studentCard.addEventListener('click', () => this.selectRole('student'));
-    }
-    if (teacherCard) {
-      teacherCard.addEventListener('click', () => this.selectRole('teacher'));
     }
 
     // Pestañas del modal de perfil
@@ -278,7 +447,7 @@ class BusCFTLAApp {
       themeSelect.value = this.currentTheme;
       themeSelect.addEventListener('change', (e) => {
         this.currentTheme = e.target.value;
-        localStorage.setItem('buscftla_current_theme', this.currentTheme);
+        busStorage.setItem('buscftla_current_theme', this.currentTheme);
         this.applyTheme();
         this.showToast('Tema visual actualizado.');
       });
@@ -327,7 +496,7 @@ class BusCFTLAApp {
         };
         this.currentTheme = 'auto';
         this.saveSettings();
-        localStorage.setItem('buscftla_current_theme', 'auto');
+        busStorage.setItem('buscftla_current_theme', 'auto');
         if (themeSelect) themeSelect.value = 'auto';
         if (alertToggle) alertToggle.checked = true;
         if (soundToggle) soundToggle.checked = true;
@@ -416,7 +585,7 @@ class BusCFTLAApp {
    * Guardar ajustes
    */
   saveSettings() {
-    localStorage.setItem('buscftla_settings', JSON.stringify(this.settings));
+    busStorage.setItem('buscftla_settings', JSON.stringify(this.settings));
   }
 
   /**
@@ -613,16 +782,22 @@ class BusCFTLAApp {
    * Renderizar datos del perfil de usuario activo
    */
   renderUserProfile() {
-    const profile = BUSCFTLA_DATA.profiles[this.currentRole];
-    if (!profile) return;
+    const profile = this.userProfile || {
+      name: 'Invitado', role: 'Invitado', roleLabel: 'Invitado', roleKey: 'student',
+      code: '—', institution: 'CFTLA — Lota Arauco', module: 'Inicia sesión para ver tu perfil',
+      metrics: { routes: 0, trips: 0, alerts: 0 }, avatarInitial: 'I'
+    };
+    const roleLabel = profile.roleLabel || profile.role;
+    const roleKey = profile.roleKey || this.currentRole;
+    const avatarInitial = profile.avatarInitial || (profile.name || 'U').split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase();
 
     // Header avatar y etiquetas
     const avatarBadge = document.getElementById('user-avatar-initials');
     const headerRoleBadge = document.getElementById('header-user-role-badge');
     const headerUserName = document.getElementById('header-user-name');
 
-    if (avatarBadge) avatarBadge.textContent = profile.avatarInitial;
-    if (headerRoleBadge) headerRoleBadge.textContent = profile.role;
+    if (avatarBadge) avatarBadge.textContent = avatarInitial;
+    if (headerRoleBadge) headerRoleBadge.textContent = roleLabel;
     if (headerUserName) headerUserName.textContent = profile.name.split(' ')[0];
 
     // Credencial institucional en la pestaña Perfil
@@ -633,9 +808,9 @@ class BusCFTLAApp {
     const credInstitution = document.getElementById('cred-institution');
     const credModule = document.getElementById('cred-module');
 
-    if (credAvatar) credAvatar.textContent = profile.avatarInitial;
+    if (credAvatar) credAvatar.textContent = avatarInitial;
     if (credName) credName.textContent = profile.name;
-    if (credRole) credRole.textContent = profile.role;
+    if (credRole) credRole.textContent = roleLabel;
     if (credCode) credCode.textContent = profile.code;
     if (credInstitution) credInstitution.textContent = profile.institution;
     if (credModule) credModule.textContent = profile.module;
@@ -652,8 +827,8 @@ class BusCFTLAApp {
     // Estilo de badge del carnet
     const credBadgeEl = document.getElementById('cred-role-badge');
     if (credBadgeEl) {
-      credBadgeEl.className = `cred-badge cred-${profile.roleKey}`;
-      credBadgeEl.textContent = profile.role.toUpperCase();
+      credBadgeEl.className = `cred-badge cred-${roleKey}`;
+      credBadgeEl.textContent = roleLabel.toUpperCase();
     }
   }
 
@@ -703,55 +878,112 @@ class BusCFTLAApp {
     }
   }
 
-  /**
-   * Manejo de selección de rol
-   */
-  selectRole(role) {
-    this.currentRole = role;
-    const studentBtn = document.getElementById('role-select-student');
-    const teacherBtn = document.getElementById('role-select-teacher');
+  setRegistrationMode(enabled, clearFields = true) {
+    this.isRegistering = enabled;
+    const nameGroup = document.getElementById('register-name-group');
+    const nameInput = document.getElementById('register-name');
     const emailInput = document.getElementById('login-email');
-    const passInput = document.getElementById('login-password');
-    const profile = BUSCFTLA_DATA.profiles[role];
+    const passwordInput = document.getElementById('login-password');
+    const submitButton = document.getElementById('btn-login-submit');
+    const toggleButton = document.getElementById('btn-toggle-auth-mode');
+    const emailHint = document.getElementById('register-email-hint');
 
-    if (studentBtn && teacherBtn) {
-      if (role === 'student') {
-        studentBtn.style.borderColor = 'var(--primary-color)';
-        studentBtn.style.background = 'var(--primary-surface)';
-        teacherBtn.style.borderColor = 'var(--border-color)';
-        teacherBtn.style.background = 'var(--bg-card-subtle)';
-      } else {
-        teacherBtn.style.borderColor = 'var(--primary-color)';
-        teacherBtn.style.background = 'var(--primary-surface)';
-        studentBtn.style.borderColor = 'var(--border-color)';
-        studentBtn.style.background = 'var(--bg-card-subtle)';
-      }
+    if (nameGroup) nameGroup.classList.toggle('is-hidden', !enabled);
+    if (nameInput) nameInput.required = enabled;
+    if (emailInput) {
+      emailInput.placeholder = enabled ? 'ej: berodriguez@cftla.cl o patricia.albornoz@cftla.cl' : 'Correo institucional';
+      if (clearFields) emailInput.value = '';
     }
-
-    if (emailInput && profile) {
-      emailInput.value = profile.email || '';
+    if (passwordInput) {
+      passwordInput.autocomplete = enabled ? 'new-password' : 'current-password';
+      if (clearFields) passwordInput.value = '';
     }
-    if (passInput && profile) {
-      passInput.value = profile.defaultPassword || '';
-    }
-
+    if (nameInput && clearFields) nameInput.value = '';
+    if (submitButton) submitButton.textContent = enabled ? 'Crear cuenta BusCFTLA' : 'Iniciar Sesión en BusCFTLA';
+    if (toggleButton) toggleButton.textContent = enabled ? '¿Ya tienes cuenta? Inicia sesión' : '¿No tienes cuenta? Regístrate';
+    if (emailHint) emailHint.classList.toggle('is-hidden', !enabled);
     const errorAlert = document.getElementById('login-error-alert');
     if (errorAlert) errorAlert.classList.add('is-hidden');
+  }
+
+  setVerificationMode(enabled) {
+    this.isAwaitingVerification = enabled;
+    this.isRegistering = false;
+    const groups = [
+      document.getElementById('register-name-group'),
+      document.getElementById('login-email-group'),
+      document.getElementById('login-password-group')
+    ];
+    groups.forEach(group => { if (group) group.classList.toggle('is-hidden', enabled); });
+    const codeGroup = document.getElementById('verification-code-group');
+    const codeInput = document.getElementById('verification-code');
+    const nameInput = document.getElementById('register-name');
+    const emailInput = document.getElementById('login-email');
+    const passwordInput = document.getElementById('login-password');
+    const submitButton = document.getElementById('btn-login-submit');
+    const toggleButton = document.getElementById('btn-toggle-auth-mode');
+    const emailLabel = document.getElementById('verification-email-label');
+    if (codeGroup) codeGroup.classList.toggle('is-hidden', !enabled);
+    if (codeInput) codeInput.required = enabled;
+    if (nameInput) nameInput.required = false;
+    if (emailInput) emailInput.required = !enabled;
+    if (passwordInput) passwordInput.required = !enabled;
+    if (emailLabel) emailLabel.textContent = this.pendingVerificationEmail;
+    if (submitButton) submitButton.textContent = enabled ? 'Comprobar correo y activar cuenta' : 'Iniciar Sesión en BusCFTLA';
+    if (toggleButton) toggleButton.classList.toggle('is-hidden', enabled);
+    const emailHint = document.getElementById('register-email-hint');
+    if (emailHint) emailHint.classList.add('is-hidden');
+  }
+
+  async resendVerificationCode() {
+    try {
+      await this.apiRequest('/resend-verification', { method: 'POST', body: JSON.stringify({ email: this.pendingVerificationEmail }) });
+      this.showToast('Si la cuenta está pendiente, enviamos un nuevo código.');
+    } catch (error) {
+      this.showToast(error.message || 'No se pudo reenviar el código.');
+    }
   }
 
   /**
    * Manejo de inicio de sesión institucional con correo y contraseña
    */
-  handleInstitutionalLogin(e) {
+  async handleInstitutionalLogin(e) {
     e.preventDefault();
     const emailInput = document.getElementById('login-email');
     const passInput = document.getElementById('login-password');
     const errorAlert = document.getElementById('login-error-alert');
     const errorText = document.getElementById('login-error-text');
 
+    if (this.isAwaitingVerification) {
+      const codeInput = document.getElementById('verification-code');
+      const code = codeInput ? codeInput.value.trim() : '';
+      const submitButton = document.getElementById('btn-login-submit');
+      if (!/^\d{6}$/.test(code)) {
+        if (errorAlert && errorText) {
+          errorText.textContent = 'Ingresa el código de 6 números que enviamos a tu correo.';
+          errorAlert.classList.remove('is-hidden');
+        }
+        return;
+      }
+      if (submitButton) submitButton.disabled = true;
+      try {
+        const result = await this.apiRequest('/verify-email', { method: 'POST', body: JSON.stringify({ email: this.pendingVerificationEmail, code }) });
+        this.pendingVerificationEmail = '';
+        busStorage.removeItem('buscftla_pending_verification');
+        this.setVerificationMode(false);
+        await this.finishAuthentication(result);
+      } catch (error) {
+        if (errorAlert && errorText) {
+          errorText.textContent = error.message;
+          errorAlert.classList.remove('is-hidden');
+        }
+        if (submitButton) submitButton.disabled = false;
+      }
+      return;
+    }
+
     const email = emailInput ? emailInput.value.trim() : '';
     const password = passInput ? passInput.value.trim() : '';
-    const profile = BUSCFTLA_DATA.profiles[this.currentRole];
 
     if (!email || !password) {
       if (errorAlert && errorText) {
@@ -761,22 +993,65 @@ class BusCFTLAApp {
       return;
     }
 
-    if (password.length < 4) {
+    if (password.length < (this.isRegistering ? 8 : 4)) {
       if (errorAlert && errorText) {
-        errorText.textContent = 'La contraseña institucional debe tener al menos 4 caracteres.';
+        errorText.textContent = this.isRegistering ? 'La contraseña debe tener al menos 8 caracteres.' : 'La contraseña institucional debe tener al menos 4 caracteres.';
         errorAlert.classList.remove('is-hidden');
       }
       return;
     }
 
-    localStorage.setItem('buscftla_role_selected', 'true');
-    localStorage.setItem('buscftla_current_role', this.currentRole);
-    localStorage.setItem('buscftla_user_email', email);
+    const nameInput = document.getElementById('register-name');
+    const name = nameInput ? nameInput.value.trim() : '';
+    if (this.isRegistering && !name) {
+      if (errorAlert && errorText) {
+        errorText.textContent = 'Ingresa tu nombre completo para crear la cuenta.';
+        errorAlert.classList.remove('is-hidden');
+      }
+      return;
+    }
 
+    const submitButton = document.getElementById('btn-login-submit');
+    if (submitButton) submitButton.disabled = true;
+    try {
+      if (this.isRegistering) {
+        const result = await this.apiRequest('/register', { method: 'POST', body: JSON.stringify({ name, email, password }) });
+        this.pendingVerificationEmail = result.email;
+        busStorage.setItem('buscftla_pending_verification', result.email);
+        if (submitButton) submitButton.disabled = false;
+        this.setVerificationMode(true);
+        this.showToast('Te enviamos un código de comprobación por correo.');
+        return;
+      }
+      const result = await this.apiRequest('/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+      await this.finishAuthentication(result);
+    } catch (error) {
+      if (error instanceof TypeError) error.message = 'No se pudo conectar con el backend. Revisa que el servidor esté ejecutándose.';
+      if (errorAlert && errorText) {
+        errorText.textContent = error.message;
+        errorAlert.classList.remove('is-hidden');
+      }
+      if (submitButton) submitButton.disabled = false;
+      return;
+    }
+    if (submitButton) submitButton.disabled = false;
+  }
+
+  async finishAuthentication(result) {
+    const submitButton = document.getElementById('btn-login-submit');
+    this.authToken = result.token;
+    busStorage.setItem('buscftla_auth_token', this.authToken);
+    this.currentRole = result.user.role;
+    this.userProfile = result.user;
+    busStorage.setItem('buscftla_role_selected', 'true');
+    busStorage.setItem('buscftla_current_role', this.currentRole);
+    busStorage.setItem('buscftla_user_email', result.user.email);
+    await this.loadServerComplaints();
+    if (submitButton) submitButton.disabled = false;
     this.closeModal('role-modal');
     this.applyTheme();
     this.renderUserProfile();
-    this.showToast(`¡Sesión iniciada como ${profile.name}!`);
+    this.showToast(this.userProfile ? `¡Bienvenido/a, ${this.userProfile.name}!` : 'Sesión iniciada correctamente.');
     if (this.settings.soundEnabled) {
       this.playFeedbackSound('success');
     }
@@ -813,10 +1088,16 @@ class BusCFTLAApp {
   /**
    * Cerrar sesión / reiniciar rol
    */
-  handleLogout() {
+  async handleLogout() {
     if (confirm('¿Deseas cerrar tu sesión institucional en BusCFTLA?')) {
-      localStorage.removeItem('buscftla_role_selected');
-      localStorage.removeItem('buscftla_user_email');
+      try { await this.apiRequest('/logout', { method: 'POST', body: '{}' }); } catch (error) { console.warn('No se pudo cerrar la sesión remota:', error); }
+      this.authToken = '';
+      this.userProfile = null;
+      busStorage.removeItem('buscftla_auth_token');
+      busStorage.removeItem('buscftla_role_selected');
+      busStorage.removeItem('buscftla_user_email');
+      busStorage.removeItem('buscftla_current_role');
+      this.setRegistrationMode(false);
       this.closeModal('profile-modal');
       this.openRoleModal();
       this.showToast('Sesión cerrada correctamente.');
@@ -827,6 +1108,8 @@ class BusCFTLAApp {
    * Abrir modal de selección de roles
    */
   openRoleModal() {
+    if (this.pendingVerificationEmail) this.setVerificationMode(true);
+    else this.setRegistrationMode(false);
     this.openModal('role-modal');
   }
 
@@ -900,7 +1183,7 @@ class BusCFTLAApp {
   /**
    * Enviar formulario de denuncia
    */
-  handleComplaintSubmit(event) {
+  async handleComplaintSubmit(event) {
     event.preventDefault();
 
     const plateInput = document.getElementById('complaint-plate');
@@ -915,38 +1198,28 @@ class BusCFTLAApp {
 
     // Validaciones
     if (!plate || plate.length < 5) {
-      alert('Por favor, ingresa una matrícula de vehículo válida (ej: BCDF-12).');
+      this.showToast('Ingresa una matrícula válida, por ejemplo BCDF-12.');
       if (plateInput) plateInput.focus();
       return;
     }
 
     if (!reason || reason.length < 10) {
-      alert('Por favor, describe detalladamente el motivo de la denuncia (mínimo 10 caracteres).');
+      this.showToast('Describe el motivo con al menos 10 caracteres.');
       if (reasonInput) reasonInput.focus();
       return;
     }
 
-    // Generar nuevo folio de denuncia
-    const randomTicket = Math.floor(1000 + Math.random() * 9000);
-    const now = new Date();
-    const formattedDate = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    const userProfile = BUSCFTLA_DATA.profiles[this.currentRole];
-
-    const newComplaint = {
-      id: `DEN-${now.getFullYear()}-${randomTicket}`,
-      date: formattedDate,
-      plate: plate,
-      line: line,
-      category: category,
-      reason: reason,
-      status: "En revisión",
-      reporter: `${userProfile.name} (${userProfile.role})`
-    };
-
-    // Guardar
-    this.complaints.unshift(newComplaint);
-    this.saveComplaints();
-    this.renderComplaintsHistory();
+    let newComplaint;
+    try {
+      const result = await this.apiRequest('/complaints', { method: 'POST', body: JSON.stringify({ plate, line, category, reason }) });
+      newComplaint = result.complaint;
+      this.complaints.unshift(newComplaint);
+      this.saveComplaints();
+      this.renderComplaintsHistory();
+    } catch (error) {
+      this.showToast(error.message || 'No se pudo enviar la denuncia. Inténtalo de nuevo.', 5000);
+      return;
+    }
 
     // Limpiar formulario
     event.target.reset();
@@ -962,7 +1235,7 @@ class BusCFTLAApp {
    * Guardar denuncias en LocalStorage
    */
   saveComplaints() {
-    localStorage.setItem('buscftla_complaints', JSON.stringify(this.complaints));
+    busStorage.setItem('buscftla_complaints', JSON.stringify(this.complaints));
   }
 
   /**
@@ -1134,4 +1407,9 @@ if (typeof window !== 'undefined') {
 document.addEventListener('DOMContentLoaded', () => {
   window.busApp = new BusCFTLAApp();
   window.busApp.init();
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Error no controlado en BusCFTLA:', event.reason);
+  if (window.busApp) window.busApp.showToast('Ocurrió un error inesperado. Inténtalo nuevamente.', 5000);
 });

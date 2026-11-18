@@ -12,6 +12,8 @@ class BusCFTLAMap {
     this.selectedStopId = null;
     this.tileLayer = null;
     this.currentTileStyle = 'light';
+    this.tileErrorCount = 0;
+    this.tileFallbackUsed = false;
     this.userLocationMarker = null;
     this.animationTimer = null;
   }
@@ -22,22 +24,13 @@ class BusCFTLAMap {
   init(containerId = 'map-container') {
     if (typeof L === 'undefined') {
       console.error('Leaflet (L) no está disponible en este momento.');
-      const container = document.getElementById(containerId);
-      if (container) {
-        container.innerHTML = `
-          <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; text-align:center; padding:24px; color:var(--text-muted); background:var(--bg-page);">
-            <div style="font-size:2.5rem; margin-bottom:12px;">🗺️</div>
-            <h3 style="font-weight:700; color:var(--text-main); margin-bottom:6px;">Cargando mapa interactivo...</h3>
-            <p style="font-size:0.85rem; max-width:280px; margin-bottom:14px;">Si el mapa tarda en mostrarse, comprueba tu conexión a internet o pulsa recargar.</p>
-            <button onclick="window.location.reload()" style="padding:10px 20px; border-radius:10px; background:var(--primary-color); color:#fff; border:none; font-weight:700; cursor:pointer;">Recargar mapa</button>
-          </div>
-        `;
-      }
+      if (window.busApp) window.busApp.showMapError('No se cargó el componente del mapa. Revisa tu conexión e inténtalo otra vez.');
       return;
     }
 
     if (typeof BUSCFTLA_DATA === 'undefined') {
       console.error('BUSCFTLA_DATA no está disponible.');
+      if (window.busApp) window.busApp.showMapError('Faltan los datos de rutas y paraderos. Recarga la aplicación para volver a cargarlos.');
       return;
     }
 
@@ -80,6 +73,7 @@ class BusCFTLAMap {
     window.addEventListener('resize', () => {
       if (this.map) this.map.invalidateSize();
     });
+    requestAnimationFrame(() => this.map.invalidateSize({ pan: false }));
 
     console.log('Mapa BusCFTLA inicializado con éxito en Lota, Chile.');
   }
@@ -92,23 +86,44 @@ class BusCFTLAMap {
       this.map.removeLayer(this.tileLayer);
     }
 
-    let url = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+    let url = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
     let maxZoom = 19;
+    let subdomains = null;
+    let attribution = '© OpenStreetMap contributors';
 
     if (style === 'dark') {
       url = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+      subdomains = 'abcd';
+      attribution = '© OpenStreetMap contributors, © CARTO';
     } else if (style === 'voyager') {
       url = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+      subdomains = 'abcd';
+      attribution = '© OpenStreetMap contributors, © CARTO';
     }
 
-    this.tileLayer = L.tileLayer(url, {
-      maxZoom: maxZoom,
-      subdomains: 'abcd',
-      attribution: '© OpenStreetMap · BusCFTLA'
-    }).addTo(this.map);
+    if (style !== 'voyager') this.tileFallbackUsed = false;
+    this.tileErrorCount = 0;
 
-    this.tileLayer.on('tileerror', (e) => {
-      console.warn('Error al cargar capa del mapa:', e.coords);
+    const tileOptions = {
+      maxZoom: maxZoom,
+      attribution
+    };
+    if (subdomains) tileOptions.subdomains = subdomains;
+    this.tileLayer = L.tileLayer(url, tileOptions).addTo(this.map);
+
+    this.tileLayer.on('load', () => {
+      if (window.busApp) window.busApp.clearMapWarning();
+    });
+
+    this.tileLayer.on('tileerror', (event) => {
+      console.warn('Error al cargar mosaico del mapa:', event.coords, event.tile && event.tile.src);
+      if (style === 'standard' && !this.tileFallbackUsed && ++this.tileErrorCount >= 4) {
+        this.tileFallbackUsed = true;
+        console.warn('OpenStreetMap no respondió a varios mosaicos; cambiando a CARTO Voyager.');
+        this.setTileLayer('voyager');
+      } else if (style !== 'standard' && ++this.tileErrorCount >= 4 && window.busApp) {
+        window.busApp.showMapWarning('No se pudieron cargar las calles del mapa. Revisa tu conexión.');
+      }
     });
 
     this.currentTileStyle = style;

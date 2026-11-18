@@ -35,9 +35,14 @@ class MainActivity : AppCompatActivity() {
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
         settings.cacheMode = WebSettings.LOAD_DEFAULT
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        settings.mixedContentMode = if (BuildConfig.DEBUG) {
+            WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        } else {
+            WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        }
 
-        WebView.setWebContentsDebuggingEnabled(true)
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        webView.addJavascriptInterface(EncryptedWebStorage(this), "BusCFTLAStorage")
 
         webView.webViewClient = WebViewClient()
         webView.webChromeClient = object : WebChromeClient() {

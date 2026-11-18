@@ -12,61 +12,6 @@ const BUSCFTLA_DATA = {
     zoom: 15
   },
 
-  profiles: {
-    student: {
-      id: "student-1",
-      roleKey: "student",
-      role: "Estudiante",
-      name: "Constanza Morales P.",
-      email: "constanza.morales@cftlotaarauco.cl",
-      defaultPassword: "cftla2026",
-      code: "2024-8507",
-      institution: "CFTLA — Lota Arauco",
-      module: "Técnico en Administración",
-      careers: [
-        "Técnico en Administración",
-        "Técnico en Informática",
-        "Mecánica Industrial",
-        "Instrumentación y Automatización",
-        "Construcción Civil",
-        "Gastronomía Internacional"
-      ],
-      metrics: {
-        routes: 4,
-        trips: 27,
-        alerts: 1
-      },
-      avatarInitial: "CM",
-      themeAccent: "blue"
-    },
-    teacher: {
-      id: "teacher-1",
-      roleKey: "teacher",
-      role: "Docente",
-      name: "Prof. Rodrigo Soto",
-      email: "rodrigo.soto@cftlotaarauco.cl",
-      defaultPassword: "docente2026",
-      code: "DOC-229",
-      institution: "CFTLA — Lota Arauco",
-      module: "Departamento Académico",
-      departments: [
-        "Departamento Académico",
-        "Área Tecnologías de Información",
-        "Área Administración y Negocios",
-        "Área Industrial y Procesos",
-        "Dirección de Docencia"
-      ],
-      metrics: {
-        routes: 4,
-        trips: 42,
-        alerts: 0,
-        punctuality: "99%"
-      },
-      avatarInitial: "RS",
-      themeAccent: "amber"
-    }
-  },
-
   lines: [
     {
       id: "linea-a",
